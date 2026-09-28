@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from cyclonedx.exception.model import InvalidUriException, UnknownHashTypeException
 from cyclonedx.model import ExternalReference, ExternalReferenceType, HashType, Property, XsUri
-from cyclonedx.model.component import Component, ComponentType
+from cyclonedx.model.component import Component, ComponentScope, ComponentType
 from packageurl import PackageURL
 
 from . import BomBuilder, PropertyName, PurlTypePypi
@@ -47,6 +47,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 class PipenvBB(BomBuilder):
     __LOCKFILE_META = '_meta'
+    __LOCKFILE_DEVELOP = 'develop'
 
     @staticmethod
     def make_argument_parser(**kwargs: Any) -> 'ArgumentParser':
@@ -156,6 +157,17 @@ class PipenvBB(BomBuilder):
         if self._pypi_url is not None:
             source_urls['pypi'] = redact_auth_from_url(self._pypi_url).rstrip('/')
 
+        # packages that are locked in the develop group only are not needed at runtime
+        dev_only_packages = frozenset(
+            map(normalize_packagename, locker.get(self.__LOCKFILE_DEVELOP, {}))
+        ).difference(
+            normalize_packagename(package_name)
+            for group_name, group_data in locker.items()
+            if group_name not in (self.__LOCKFILE_META, self.__LOCKFILE_DEVELOP)
+            for package_name in group_data
+        )
+        self._logger.debug('dev_only_packages: %r', dev_only_packages)
+
         all_components: dict[str, Component] = {}
         if root_c:
             # root for possible self-installs
@@ -173,6 +185,7 @@ class PipenvBB(BomBuilder):
                         type=ComponentType.LIBRARY,
                         name=package_name,
                         version=package_data['version'][2:] if 'version' in package_data else None,
+                        scope=ComponentScope.EXCLUDED if package_name_normalized in dev_only_packages else None,
                         external_references=self.__make_extrefs(package_name, package_data, source_urls),
                     )
                     component.purl = PackageURL(
